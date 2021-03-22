@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - geometry - terrain</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="assets/css/main.css">
+		<style>
+			body {
+				background-color: #bfd1e5;
+				color: #61443e;
+			}
+			a {
+				color: #a06851;
+			}
+		</style>
+	</head>
+	<body>
+
+		<div id="container"></div>
+		<script src="assets/js/tween.js"></script>
+		<script src="assets/js/UTMLatLng.js"></script>
+		<script type="module">
+
+			import * as THREE from '../build/three.module.js';
+
+			import Stats from './assets/jsm/libs/stats.module.js';
+			import { GUI } from './assets/jsm/libs/dat.gui.module.js';
+			import { OrbitControls } from './assets/jsm/controls/OrbitControls.js';
+			import { OBJLoader } from './assets/jsm/loaders/OBJLoader.js';
+			import { MTLLoader } from './assets/jsm/loaders/MTLLoader.js';
+
+			// import { TWEEN } from './assets/jsm/libs/tween.module.min.js';
+
+			let container, stats;
+
+			let camera, controls, scene, renderer;
+
+			let mesh, texture;
+
+			// const worldWidth = 1024, worldDepth = 512,
+				// worldHalfWidth = worldWidth / 2, worldHalfDepth = worldDepth / 2;
+
+			var worldWidth, worldDepth, worldHalfWidth, worldHalfDepth;
+
+			const raycaster = new THREE.Raycaster();
+			const mouse = new THREE.Vector2();
+
+			let json;
+			var maxE = 0, minE = 1000000, maxX = 0, minX = 1000000000, maxY = 0, minY = 1000000000;
+
+			let mousedown = false, drag = 0, startPoint = new THREE.Vector3(), endPoint = new THREE.Vector3(), rectangleFixed = true, drawMode = "line";
+			
+			const material = new THREE.LineBasicMaterial({
+				color: 0x0000ff
+			});
+
+			let path, person, vehicle, motionready = true;
+
+			init();
+
+			addCar();
+
+			addControls();
+			
+			readText();
+			
+			animate();
+
+			function init() {
+
+				container = document.getElementById( 'container' );
+				container.innerHTML = "";
+
+				renderer = new THREE.WebGLRenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				renderer.shadowMap.enabled = true;
+				renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+				container.appendChild( renderer.domElement );
+
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color( 0xbfd1e5 );
+
+				camera = new THREE.PerspectiveCamera( 60, window.innerWidth / window.innerHeight, 0.1, 20000 );
+
+				controls = new OrbitControls( camera, renderer.domElement );
+				controls.minDistance = 10;
+				controls.maxDistance = 10000;
+				controls.maxPolarAngle = Math.PI / 2;
+
+				container.addEventListener( 'pointerdown', onMouseDown, false );
+				container.addEventListener( 'pointermove', onMouseMove, false );
+				container.addEventListener( 'pointerup', onMouseUp, false );
+
+				var light = new THREE.HemisphereLight(0xffffbb, 0x080820, 0.2 );
+				scene.add(light)
+
+				// const plight = new THREE.PointLight( 0xffffff);
+				const plight = new THREE.SpotLight(0xffffff);
+				plight.intensity = 0.8;
+				plight.position.set( -1000, 1500, -1000 );
+				plight.castShadow = true;
+
+				plight.shadow.mapSize.width = 512;
+				plight.shadow.mapSize.height = 512;
+				plight.shadow.camera.near = 0.5;
+				plight.shadow.camera.far = 5000;
+				scene.add( plight );				
+				
+				// const axesHelper = new THREE.AxesHelper(1000);
+				// scene.add(axesHelper)
+			}
+
+			function addCar() {
+				var objloader = new OBJLoader();
+				var mtlloader = new MTLLoader();
+				mtlloader.load('assets/model/car.mtl', function(materials) {
+					materials.preload();
+					objloader.setMaterials(materials);
+					objloader.load('assets/model/car.obj', function(obj) {
+						person = obj;
+						console.log(person)
+						// obj.scale.set(0.03, 0.03, 0.03);
+						obj.scale.set(3, 3, 3);
+						scene.add(obj)
+					});
+				})
+				
+			}
+
+			function generateTerrain() {
+				//
+				const data = generateHeight( worldWidth, worldDepth );
+				controls.target.y = data[ worldHalfWidth + worldHalfDepth * worldWidth ];
+				camera.position.y = controls.target.y + 300;
+				camera.position.x = 500;
+				controls.update();
+
+				var geometry = new THREE.PlaneBufferGeometry( worldWidth, worldDepth, worldWidth - 1, worldDepth - 1 );
+				geometry.rotateX( - Math.PI / 2 );
+
+				const vertices = geometry.attributes.position.array;
+
+				for ( let i = 0, j = 0, l = vertices.length; i < l; i ++, j += 3 ) {
+					
+					vertices[ j + 1 ] = data[ i ];
+
+				}
+
+				geometry.computeFaceNormals(); // needed for helper
+
+				texture = new THREE.CanvasTexture( generateTexture( data, worldWidth, worldDepth ) );
+				texture.wrapS = THREE.ClampToEdgeWrapping;
+				texture.wrapT = THREE.ClampToEdgeWrapping;
+
+				mesh = new THREE.Mesh( geometry, new THREE.MeshBasicMaterial( { map: texture } ) );
+				// mesh = new THREE.Mesh( geometry, new THREE.MeshPhongMaterial( { map: THREE.ImageUtils.loadTexture('assets/image/texture.jpg') } ) );
+				mesh.castShadow = true;
+				mesh.receiveShadow = true;
+
+				scene.add( mesh );
+
+
+				stats = new Stats();
+				container.appendChild( stats.dom );
+
+				//
+
+				window.addEventListener( 'resize', onWindowResize, false );
+
+				readPath();
+
+			}
+
+			function readText() {
+				// As with JSON, use the Fetch API & ES6
+				fetch('json/jsonData4.txt')
+				.then(response => response.text())
+				.then(data => {
+					// Do something with your data
+					json = JSON.parse(data);
+					analyzeJson()
+				});
+			}
+
+			function readPath() {
+				// As with JSON, use the Fetch API & ES6
+
+				var utmLatLng = new UTMLatLng();
+				console.log(utmLatLng)
+				fetch('json/Path_LatLng.txt')
+				.then(response => response.text())
+				.then(data => {
+					// Do something with your data
+					path = JSON.parse(data);
+					for(let i = 0; i < path.length; i++){
+						let result = utmLatLng.convertLatLngToUtm(path[i].position[0], path[i].position[1],10);
+						path[i].position[0] = result.Easting - minX - worldHalfWidth;
+						path[i].position[1] = result.Northing - minY - worldHalfDepth;
+					}
+					
+					console.log(path[0].position[0]+minX, path[0].position[1]+minY)
+
+				});
+
+				
+			}
+
+			function analyzeJson() {
+
+				
+				for(var i = 0; i < json[1].layers.length; i++) {
+					var item = json[1].layers[i];
+
+					if(item.elevation > maxE) maxE = item.elevation;
+					if(item.elevation < minE) minE = item.elevation;
+
+					for(var j = 0; j < item.coordinates.length; j++) {
+
+						if(item.coordinates[j][0] > maxX) maxX = item.coordinates[j][0];
+						if(item.coordinates[j][0] < minX) minX = item.coordinates[j][0];
+						if(item.coordinates[j][1] > maxY) maxY = item.coordinates[j][1];
+						if(item.coordinates[j][1] < minY) minY = item.coordinates[j][1];
+					}
+
+				}
+
+				// console.log(maxE, minE, maxX, minX, maxY, minY)
+				// console.log(maxE-minE)
+
+				worldWidth = parseInt((maxX-minX)/2), worldDepth = parseInt((maxY-minY)/2),
+				worldHalfWidth = worldWidth / 2, worldHalfDepth = worldDepth / 2;
+				// console.log(worldWidth, worldDepth)
+
+				generateTerrain();
+				// console.log(maxElevation, minElevation, startX, startY, terrainW, terrainH)
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			function generateHeight( width, height ) {
+
+				const size = width * height, data = new Uint16Array( size ), interpolatedData = new Uint16Array( size );
+				
+				for ( let i = 0; i < size; i ++ ) {
+
+					data[ i ] = 0;
+					interpolatedData[ i ] = 0;
+
+				}
+
+				for(var i = 0; i < json[1].layers.length; i++) {
+					
+					var item = json[1].layers[i];
+
+					for(var j = 0; j < item.coordinates.length; j++) {
+
+						var coord = item.coordinates[j];
+
+						var xInd = parseInt((coord[0] - minX) / 2);
+
+						var yInd = parseInt((coord[1] - minY) / 2);
+
+						data[ yInd * worldWidth + xInd ] = parseInt(item.elevation - minE);
+
+					}
+
+				}
+
+				for ( let i = 0; i < size; i ++ ) {
+					
+					if(data[ i ] == 0) {
+
+						let count = 0;
+						let temp = 0;
+						let interpolation = 0;
+						for(let j = -10; j < 10; j++){
+							for(let k = -10; k < 10; k++){
+								if(data[i+j*worldWidth+k] != 0){
+									temp += data[i+j*worldWidth+k];
+									count ++;
+								}
+							}
+						}
+						if(count > 5){
+
+							interpolatedData[i] = parseInt(temp/count);
+
+						}							
+					}
+
+				}
+
+				for ( let i = 0; i < size; i ++ ) {
+					if(data[i] == 0)
+						data[i] = interpolatedData[i];
+				}
+
+				for ( let i = 0; i < size; i ++ ) {
+					
+					if(data[i] == 0){
+						const interpolation = data[i-1];
+						var dir = 1;
+						var index = i+dir;
+						while(1){
+							var breakFlag = false;
+							if(data[index] == 0 || data[index+worldWidth] == 0 || data[index+worldWidth*2] == 0 ){
+								data[index] = interpolation;
+								index += dir;
+							} else {
+								
+								for(let t = dir*10; t != -dir*11; t -= dir){
+									if(data[index+worldWidth+t] == 0){
+										index += worldWidth + t;
+										dir *= -1;
+										break;
+									}
+									if(t == -dir*10) breakFlag = true;
+								}
+							}
+							if(breakFlag) break;
+						}
+						
+					}
+						
+				}
+
+				for(var i = 0; i < size; i++){
+					if(detectboundary(i, worldWidth, worldDepth))
+						data[i] = 0;
+				}
+
+
+				return data;
+
+			}
+
+			function detectboundary(i, w, h){
+				if(i < w*10 || i > w*(h-10) || (i+1)%w == 0 || i%w == 0)
+					return true
+				return false;
+			}
+
+			function generateTexture( data, width, height ) {
+
+				// bake lighting into texture
+
+				let context, image, imageData, shade;
+
+				const vector3 = new THREE.Vector3( 0, 0, 0 );
+
+				const sun = new THREE.Vector3( 0.3, 0.3, 0.3 );
+				// sun.normalize();
+
+				const canvas = document.createElement( 'canvas' );
+				canvas.width = width;
+				canvas.height = height;
+
+				context = canvas.getContext( '2d' );
+				context.fillStyle = '#000';
+				context.fillRect( 0, 0, width, height );
+
+				image = context.getImageData( 0, 0, canvas.width, canvas.height );
+				imageData = image.data;
+
+				for ( let i = 0, j = 0, l = imageData.length; i < l; i += 4, j ++ ) {
+
+					vector3.x = data[ j - 2 ] - data[ j + 2 ];
+					vector3.y = 1;
+					vector3.z = data[ j - width * 2 ] - data[ j + width * 2 ];
+					vector3.normalize();
+
+					shade = vector3.dot( sun );
+
+					imageData[ i ] = ( 96 + shade * 128 ) * ( 0.8 + data[ j ] * 0.002 );
+					imageData[ i + 1 ] = ( 32 + shade * 96 ) * ( 0.8 + data[ j ] * 0.002 );
+					imageData[ i + 2 ] = ( shade * 96 ) * ( 0.8 + data[ j ] * 0.002 );
+
+				}
+
+				context.putImageData( image, 0, 0 );
+
+				// Scaled 4x
+
+				const canvasScaled = document.createElement( 'canvas' );
+				canvasScaled.width = width * 4;
+				canvasScaled.height = height * 4;
+
+				context = canvasScaled.getContext( '2d' );
+				context.scale( 4, 4 );
+				context.drawImage( canvas, 0, 0 );
+
+				image = context.getImageData( 0, 0, canvasScaled.width, canvasScaled.height );
+				imageData = image.data;
+
+				for ( let i = 0, l = imageData.length; i < l; i += 4 ) {
+
+					const v = ~ ~ ( Math.random() * 5 );
+
+					imageData[ i ] += v;
+					imageData[ i + 1 ] += v;
+					imageData[ i + 2 ] += v;
+
+				}
+
+				context.putImageData( image, 0, 0 );
+
+				return canvasScaled;
+
+			}
+
+			//
+
+			function animate() {
+
+				requestAnimationFrame( animate );
+
+				render();
+				if(stats)
+					stats.update();
+
+			}
+
+			function render() {
+
+				renderer.render( scene, camera );
+
+				TWEEN.update();
+
+			}
+
+			function getIntersection(event) {
+				mouse.x = ( event.clientX / renderer.domElement.clientWidth ) * 2 - 1;
+				mouse.y = - ( event.clientY / renderer.domElement.clientHeight ) * 2 + 1;
+				raycaster.setFromCamera( mouse, camera );
+
+				// See if the ray from the camera into the world hits one of our meshes
+				const intersects = raycaster.intersectObject( mesh );
+				return intersects;
+			}
+
+			function getIntersection_car(event) {
+				mouse.x = ( event.clientX / renderer.domElement.clientWidth ) * 2 - 1;
+				mouse.y = - ( event.clientY / renderer.domElement.clientHeight ) * 2 + 1;
+				raycaster.setFromCamera( mouse, camera );
+
+				// See if the ray from the camera into the world hits one of our meshes
+				const intersects = raycaster.intersectObjects( person.children, true);
+				return intersects;
+			}
+
+			function onMouseDown( event ) {
+				
+				mousedown = true;
+				
+				// if(intersects.length == 0) return;
+
+			}
+
+			function onMouseMove( event ) {
+				if(mousedown) drag ++;
+				// if(rectangleFixed) return;
+				// if(intersects.length == 0) return;
+
+				// let intersect = intersects[0];
+				// endPoint.copy(intersect);
+				// drawRectangle();
+				
+			}
+
+			function onMouseUp( event ) {
+				
+				event.preventDefault() 
+				
+				var intersectCar = getIntersection_car(event);
+				if(intersectCar.length > 0){
+					alert("car is clicked");
+				}
+				var intersects = getIntersection(event)
+				if(intersects.length == 0) return;
+				let intersect = intersects[0].point;
+
+				if(drag > 4) {
+					drag = 0;
+					mousedown = false;
+					return;
+				} 
+				
+				if(rectangleFixed) {
+					startPoint.copy(intersect);
+					rectangleFixed = false;
+				} else {
+					endPoint.copy(intersect);
+					rectangleFixed = true;
+					if(drawMode == "rectangle")
+						drawRectangle();
+					else
+						drawLine();
+				}
+						
+				mousedown = false;
+				drag = 0;	
+
+			}
+
+			function drawLine() {
+				if(scene.getObjectByName("line")){
+					var line = scene.getObjectByName("line");
+					line.geometry.dispose();
+					line.material.dispose();
+					scene.remove(line);
+				}
+				let startIndex = startPoint.x + worldHalfWidth + parseInt(startPoint.z + worldHalfDepth);
+				let endIndex = endPoint.x + worldHalfWidth + parseInt(endPoint.z + worldHalfDepth);
+
+				let deltaX = endPoint.x - startPoint.x;
+				let deltaZ = endPoint.z - startPoint.z;
+				let distance = parseInt(startPoint.distanceTo(endPoint));
+				
+				const vertices = mesh.geometry.attributes.position.array;
+				const points = [];
+
+				for(let x = startPoint.x, z = startPoint.z, step = 0; step < distance; x += deltaX / distance, z+= deltaZ/distance, step++){
+					
+					
+					let index = VertexFromPosition(new THREE.Vector3(x, 0, z));
+					points.push(new THREE.Vector3(x, vertices[index * 3 + 1]+2, z));
+					// console.log(new THREE.Vector3(x, vertices[index * 3 + 1], z))
+				}
+				
+				const geometry = new THREE.BufferGeometry().setFromPoints( points );
+
+				const linesegment = new THREE.Line( geometry, material );
+				linesegment.name = "line";
+				scene.add( linesegment );
+			}
+
+			function drawRectangle() {
+				
+				if(scene.getObjectByName("rectangle")){
+					var rectangle = scene.getObjectByName("rectangle");
+					rectangle.geometry.dispose();
+					rectangle.material.dispose();
+					scene.remove(rectangle);
+				}
+				let startIndex = startPoint.x + worldHalfWidth + parseInt(startPoint.z + worldHalfDepth);
+				let endIndex = endPoint.x + worldHalfWidth + parseInt(endPoint.z + worldHalfDepth);
+
+				const vertices = mesh.geometry.attributes.position.array;
+
+				const points = [];
+				let smallX = startPoint.x < endPoint.x ? startPoint : endPoint;
+				let bigX = startPoint.x > endPoint.x ? startPoint : endPoint;
+				let smallZ = startPoint.z < endPoint.z ? startPoint : endPoint;
+				let bigZ = startPoint.z > endPoint.z ? startPoint : endPoint;
+				
+				let index1 = parseInt(smallX.x) + worldHalfWidth + parseInt(smallZ.z + worldHalfDepth) * worldWidth;
+				let index2 = parseInt(bigX.x) + worldHalfWidth + parseInt(smallZ.z + worldHalfDepth) * worldWidth;
+				let index3 = parseInt(bigX.x) + worldHalfWidth + parseInt(bigZ.z + worldHalfDepth) * worldWidth;
+				let index4 = parseInt(smallX.x) + worldHalfWidth + parseInt(bigZ.z + worldHalfDepth) * worldWidth;
+				
+				for(var i = index1, delta = 0; i < index2; i++, delta ++){
+					points.push(new THREE.Vector3(smallX.x + delta, vertices[i*3+1]+1, smallZ.z));
+				}
+
+				for(var i = index2, delta = 0; i < index3; i += worldWidth, delta++){
+					points.push(new THREE.Vector3(bigX.x, vertices[i*3+1]+1, smallZ.z + delta));
+				}
+
+				for(var i = index3, delta = 0; i > index4; i--, delta --){
+					points.push(new THREE.Vector3(bigX.x + delta, vertices[i*3+1]+1, bigZ.z));
+				}
+
+				for(var i = index4, delta = 0; i > index1; i -= worldWidth, delta ++){
+					points.push(new THREE.Vector3(smallX.x, vertices[i*3+1]+1, bigZ.z-delta));
+				}
+				const geometry = new THREE.BufferGeometry().setFromPoints( points );
+
+				const linesegment = new THREE.Line( geometry, material );
+				linesegment.name = "rectangle";
+				scene.add( linesegment );
+			}
+
+			function VertexFromPosition(position) {
+				return parseInt(position.x + worldHalfWidth + (parseInt(position.z) + worldHalfDepth) * worldWidth);
+			}
+
+			function toggleCarView() {
+				console.log("toggle")
+				person.visible = !person.visible;
+			}
+
+			function motion() {
+				if(!motionready) return;
+				motionHelper();
+			}
+
+			function motionHelper(pathIndex = 0) {
+				motionready = false;
+				const vertices = mesh.geometry.attributes.position.array;
+
+				if(pathIndex === path.length) { motionready = true; return;}
+				const speed = 0.02;
+
+				var destination = new THREE.Vector3(path[pathIndex].position[0] - worldHalfWidth, 0, path[pathIndex].position[1]-worldHalfDepth);
+				person.position.y = 0;
+				let distance = person.position.distanceTo(destination);
+				let destIndex = VertexFromPosition(destination);
+				// destination.y = vertices[destIndex * 3 + 1];
+				person.lookAt(destination)
+				let time = distance/speed;
+
+				new TWEEN.Tween({x: person.position.x, y:person.position.y, z:person.position.z, rot: 0})
+					.to({x: destination.x, y: destination.y, z: destination.z, rot: 0}, time)
+					.onUpdate(function () {
+						person.position.set(this.x, this.y, this.z);
+						let index = VertexFromPosition(person.position);
+						person.position.y = vertices[index * 3+1] + 2;
+
+
+					})
+					.yoyo(true)
+					.start()
+					.onComplete(function() {
+						console.log("complete")
+						// pathIndex ++;
+						motionHelper(pathIndex+1);
+					});
+			}
+
+			function drawLineMode() {
+				console.log("test1")
+				drawMode = "line";
+			}
+
+			function drawRectangleMode() {
+				console.log("test2")
+				drawMode = "rectangle";
+			}
+
+			function addControls() {
+				const params = {
+					motion: motion,
+					drawLineMode: drawLineMode,
+					drawRectangleMode: drawRectangleMode,
+					toggleCarView: toggleCarView,
+				};
+				var gui = new GUI();
+				gui.add( params, 'motion' ).name( 'Motion' );
+				gui.add( params, 'drawLineMode' ).name( 'Draw line' );
+				gui.add( params, 'drawRectangleMode' ).name( 'Draw rectangle' );
+				gui.add( params, 'toggleCarView').name('Toggle Car View');
+			}
+
+			function calcPosFromLatLonRad(radius, lat, lon) {
+
+				var spherical = new THREE.Spherical(
+					radius,
+					THREE.Math.degToRad(90 - lon),
+					THREE.Math.degToRad(lat)
+				);
+
+				var vector = new THREE.Vector3();
+				vector.setFromSpherical(spherical);
+
+				console.log(vector.x, vector.y, vector.z);
+				return vector;
+			}
+
+		</script>
+
+	</body>
+</html>
